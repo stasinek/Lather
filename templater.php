@@ -56,21 +56,28 @@
             	return $msg.'<br>';
             }
             $output = file_get_contents($this->file);
-            
-            while (($posb = strpos($output,"{"."?include"))!==false) {
+ 			// inlcude file as nested template
+			while (($posb = strpos($output,"{"."?include"))!==false) 
+			{
 					$pose = strpos($output,"?"."}",$posb);
 				if ($pose!==false) {
 					$posbcc = 10; $posecc = 3;
 					// incluce(, include (, include <, include[, include(" and so on..
+					//remove heading spaces
 					while ($output[$posb+$posbcc]==' ') $posbcc++;
+					//remove heading > ] )
 					if ($output[$posb+$posbcc]== '(' || $output[$posb+$posbcc]== '[' || $output[$posb+$posbcc]=='<') $posbcc++;
 					while ($output[$posb+$posbcc]==' ') $posbcc++;
+					//remove heading ",'
 					if ($output[$posb+$posbcc]=='\'' || $output[$posb+$posbcc]=='\"') $posbcc++;
 					while ($output[$posb+$posbcc]==' ') $posbcc++;
 					// incluce -> >,],),"),') and so on..
+					//remove tailing spaces
 					while ($output[$pose-1]==' ') {$posecc++;$pose--;}
+					//remove tailing > ] )
 					if ($output[$pose-1]== ')' || $output[$pose-1]== ']' || $output[$pose-1]=='>') {$posecc++;$pose--;}
 					while ($output[$pose-1]==' ') {$posecc++;$pose--;}
+					//remove tailing ",'
 					if ($output[$pose-1]=='\'' || $output[$pose-1]=='\"') {$posecc++;$pose--;}
 					while ($output[$pose-1]==' ') {$posecc++;$pose--;}
 
@@ -83,33 +90,49 @@
 				}	
 			
 			}
-            foreach ($this->values as $key => $value) {
+			// Set, arrays or regular $values as paired before by set function
+            foreach ($this->values as $key => $value) 
+			{
             	$tagToReplace = "{"."$"."{$key}"."}";
-            	$output = str_replace($tagToReplace, $value, $output);
+            	if  (is_array($value)) 
+					{
+					$concentrated_value = "";
+					foreach ($value as $sub_value)  $concentrated_values = $concentrated_values.$sub_value;
+					$output = str_replace($tagToReplace, $concentrated_value, $output);
+					}
+				else $output = str_replace($tagToReplace, $value, $output);
             }
-            while (($posb = strpos($output,"{"."?php"))!==false) {
+			// Eval PHP scripts NOTE: using replaced values by set! consider as server side "javascript" replacement.
+			// Here could do loops evaluate more complicated variables, include files, 
+            while (($posb = strpos($output,"{"."?php"))!==false) 
+			{
 					$pose = strpos($output,"?"."}",$posb);
 				if ($pose!==false) {
 					$posbcc = 5; $posecc = 2;
-					//remove spaces
+					//remove heading spaces
 					while ($output[$posb+$posbcc]==' ') {$posbcc++;}
+					//remove tailing spaces
 					while ($output[$pose-1]==' ') {$posecc++; $pose--;}
-
+					//extract string for evaluation
 					$toeval = substr($output,$posb + $posbcc,$pose - ($posb + $posbcc));
+					//save existing echo buffer for a while
 					$buffered_len = ob_get_length();
 					if ($buffered_len!==false ? $buffered_len > 0 : false) {
 						$buffered = ob_get_clean();
 						}
+					//redirect PHP echo into separate buffer
 					ob_start();
 					eval($toeval);
 					$evaluated = ob_get_clean();
 					$output = substr_replace($output,$evaluated,$posb,($pose + $posecc) - $posb);
+					//restore PHP parent echo buffer
 					if ($buffered_len!==false ? $buffered_len > 0 : false) { 
 						ob_start(); echo $buffered; 
 						}
 				}	
-			
 			}
+			// for, after including files, after replacing variables, evaluating srcipts this place is for copy-pasting results
+			//TODO for(), need to rethink where to put it, before, after?
             return $output;
         }
         /**
