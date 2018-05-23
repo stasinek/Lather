@@ -4,7 +4,12 @@
 	 * 
 	 * @link http://www.broculos.net/ Broculos.net Programming Tutorials
 	 * @author Nuno Freitas <nunofreitas@gmail.com>
-	 * @version 1.0
+	 * @version 1.0 + 0.1 mod github.com/stasinek/lather
+	 * @modified by SSTSOFT.pl {$} instead of [@] more compatible with Latte, 
+	 * @added basic support for arrays:
+	 * @for variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
+	 * @in future hope to change it to be more sophisticated, add support for $array[indexes] and it's {$array}->{$values}
+	 * @addded support for <?php?> & <?include()?>
 	 */
     class Template {
     	/**
@@ -57,9 +62,9 @@
             }
             $output = file_get_contents($this->file);
  			// inlcude file as nested template
-			while (($posb = strpos($output,"{"."?include"))!==false) 
+			while (($posb = strpos($output,"<"."?include"))!==false) 
 			{
-					$pose = strpos($output,"?"."}",$posb);
+					$pose = strpos($output,"?".">",$posb);
 				if ($pose!==false) {
 					$posbcc = 10; $posecc = 3;
 					// incluce(, include (, include <, include[, include(" and so on..
@@ -111,9 +116,9 @@
             }
 			// Eval PHP scripts NOTE: using replaced values by set! consider as server side "javascript" replacement.
 			// Here could do loops evaluate more complicated variables, include files, 
-            while (($posb = strpos($output,"{"."?php"))!==false) 
+            while (($posb = strpos($output,"<"."?php"))!==false) 
 			{
-					$pose = strpos($output,"?"."}",$posb);
+					$pose = strpos($output,"?".">",$posb);
 				if ($pose!==false) {
 					$posbcc = 5; $posecc = 2;
 					//remove heading spaces
