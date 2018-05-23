@@ -51,8 +51,8 @@
         	 * Anything else loads the file contents and loops through the array replacing every key for its value.
         	 */
             if (!file_exists($this->file)) {
-				$msg = "Error loading template file ($this->file).";
-				trigger_error( $msg,E_USER_NOTICE);
+				$msg = 'Error loading template file ({$this}->file) invoked by '.debug_backtrace()[1]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'].' ';
+				trigger_error($msg,E_USER_NOTICE);
             	return $msg.'<br>';
             }
             $output = file_get_contents($this->file);
@@ -84,8 +84,9 @@
 					$toinclude = substr($output,$posb + $posbcc,$pose - ($posb + $posbcc));
 					$included_content = file_get_contents($toinclude);
 					if ($included_content===false) {
-						$included_content = 'Template "'.$this->file.'" at position: '.$posb.' could not include file: "'.$toinclude.'"';
-					}
+					$included_content = 'Templater could not include file: "'.$toinclude.'" position '.$posb.' in "'.$this->file.'" called by '.debug_backtrace()[1]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'];
+					trigger_error($included_content,E_USER_NOTICE);
+				}
 					$output = substr_replace($output,$included_content,$posb,($pose + $posecc) - $posb);
 				}	
 			
@@ -157,8 +158,9 @@
             
             foreach ($templates as $template) {
             	$content = (get_class($template) !== "Template")
-            		? "Error, incorrect type - expected Template."
+            		? 'Template->merge() Error, incorrect type - expected Template, invoked by '.debug_backtrace()[1]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'].' '
             		: $template->output();
+//				trigger_error($content,E_USER_NOTICE);
             	$output .= $content . $separator;
             }
             return $output;
