@@ -95,11 +95,17 @@
 			{
             	$tagToReplace = "{"."$"."{$key}"."}";
             	if  (is_array($value)) 
+				{
+					$value_index = 0;
+					while (($posb = strpos($output,$tagToReplace))!==false) 
 					{
-					$concentrated_value = "";
-					foreach ($value as $sub_value)  $concentrated_values = $concentrated_values.$sub_value;
-					$output = str_replace($tagToReplace, $concentrated_value, $output);
+						if ($value->count() < $value_index) 
+							break;
+						$indexed_value = $value->{$value_index};
+						$output = substr_replace($tagToReplace,$indexed_value,$posb);
+						$value_index++;
 					}
+				}
 				else $output = str_replace($tagToReplace, $value, $output);
             }
 			// Eval PHP scripts NOTE: using replaced values by set! consider as server side "javascript" replacement.
