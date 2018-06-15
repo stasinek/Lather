@@ -4,12 +4,14 @@
 	 * 
 	 * @link http://www.broculos.net/ Broculos.net Programming Tutorials
 	 * @author Nuno Freitas <nunofreitas@gmail.com>
-	 * @version 1.0 + 0.1 mod github.com/stasinek/lather
+	 * @version 1.0 + 0.2 mod http://github.com/stasinek/lather
 	 * @modified by SSTSOFT.pl {$} instead of [@] more compatible with Latte, 
 	 * @added basic support for arrays:
 	 * @for variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
-	 * @in future hope to change it to be more sophisticated, add support for $array[indexes] and it's {$array}->{$values}
-	 * @addded support for <?php?> & <?include()?>
+	 * @in future hope to change it to be more sophisticated,
+	 * @will add support for $array[indexes] and it's {$array}->{$values}
+	 * @v0.1 addded support for <?php?> & <?include()?>
+	 * @v0.2 tweaked <?include()?> to support relative path ../ ./ or simmilar to CSS @import url() -> include()
 	 */
     class Template {
     	/**
@@ -71,27 +73,36 @@
 					//remove heading spaces
 					while ($output[$posb+$posbcc]==' ') $posbcc++;
 					//remove heading > ] )
-					if ($output[$posb+$posbcc]== '(' || $output[$posb+$posbcc]== '[' || $output[$posb+$posbcc]=='<') $posbcc++;
+					if ($output[$posb+$posbcc]== '(' || $output[$posb+$posbcc]== '[' || $output[$posb+$posbcc]=='<') 
+						{ $posbcc++; }
 					while ($output[$posb+$posbcc]==' ') $posbcc++;
 					//remove heading ",'
-					if ($output[$posb+$posbcc]=='\'' || $output[$posb+$posbcc]=='\"') $posbcc++;
+					if ($output[$posb+$posbcc]=='\'' || $output[$posb+$posbcc]=='\"') 
+						{ $posbcc++; }
 					while ($output[$posb+$posbcc]==' ') $posbcc++;
 					// incluce -> >,],),"),') and so on..
 					//remove tailing spaces
 					while ($output[$pose-1]==' ') {$posecc++;$pose--;}
 					//remove tailing > ] )
-					if ($output[$pose-1]== ')' || $output[$pose-1]== ']' || $output[$pose-1]=='>') {$posecc++;$pose--;}
+					if ($output[$pose-1]== ')' || $output[$pose-1]== ']' || $output[$pose-1]=='>') 
+						{ $posecc++; $pose--; }
 					while ($output[$pose-1]==' ') {$posecc++;$pose--;}
 					//remove tailing ",'
-					if ($output[$pose-1]=='\'' || $output[$pose-1]=='\"') {$posecc++;$pose--;}
+					if ($output[$pose-1]=='\'' || $output[$pose-1]=='\"') 
+						{ $posecc++; $pose--; }
 					while ($output[$pose-1]==' ') {$posecc++;$pose--;}
-
-					$toinclude = substr($output,$posb + $posbcc,$pose - ($posb + $posbcc));
+					// check is path relative starting with '.' or '..' or '/' 
+						$toinclude = substr($output,$posb + $posbcc,$pose - ($posb + $posbcc));
+					if [$toinclude!= null ? $toinclude[0]!='/' AND $toinclude[1]!=':' : false) { 
+						dirname($this->file).'/'.$toinclude; 
+						}
+					// FINALLY: open file and take contents
 					$included_content = file_get_contents($toinclude);
+					// if cant get content's trow error. (optionally could skip & just continue NO_ERRORS option to Lather?)
 					if ($included_content===false) {
-					$included_content = 'Templater could not include file: "'.$toinclude.'" position '.$posb.' in "'.$this->file.'" called by '.debug_backtrace()[0]['function'].'() in file :"'.debug_backtrace()[0]['file'].'" at line: '.debug_backtrace()[0]['line'];
-					trigger_error($included_content,E_USER_NOTICE);
-				}
+						$included_content = 'Templater could not include file: "'.$toinclude.'" position '.$posb.' in "'.$this->file.'" called by '.debug_backtrace()[0]['function'].'() in file :"'.debug_backtrace()[0]['file'].'" at line: '.debug_backtrace()[0]['line'];
+						trigger_error($included_content,E_USER_NOTICE);
+				}	// REPLACE TAG with file content
 					$output = substr_replace($output,$included_content,$posb,($pose + $posecc) - $posb);
 				}	
 			
