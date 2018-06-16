@@ -37,12 +37,12 @@
             $this->file = $file;
         }
 		// function able to replace defined tag and evaluate php
-		function eval_php($header = "php",&$output) {
+		function eval_scripts(&$output,$header = "php") {
             $header_len = strlen($header);
 			// Eval PHP scripts NOTE: using replaced values by set! consider as server side "javascript" replacement.
 			// Here could do loops evaluate more complicated variables, include files, 
 			while (($posb = strpos($output,"<"."?".$header))!==false) 
-			{
+				{
 					$pose = strpos($output,"?".">",$posb);
 				if ($pose!==false) {
 					$posbcc = 2 + $header_len; $posecc = 2; $pose += 2;
@@ -66,13 +66,40 @@
 					if ($buffered_len!==false ? $buffered_len > 0 : false) { 
 						ob_start(); echo $buffered; 
 						}
-				}	
-			}
+					} 
+				}
+			return $output;
+		}
+		// replace each ocurence of keyword with value set by this->set(key,value);
+		function replace_variables(&$output) {
+			foreach ($this->values as $key => $value) 
+				{
+            	$tagToReplace[] = array("$"."{"."{$key}"."}","@"."["."{$key}"."]");
+            	if  (is_array($value)) 
+					{
+					for ($value_index = 0;($posb = strpos($output,$tagToReplace))!==false; $value_index++) 
+						{
+						if ($value->count() < $value_index) 
+							break;
+						$indexed_value = $value->{$value_index};
+						for ($tags = 0; $tags < count($tagToReplace,0); $tags++) {
+							 $output = substr_replace($tagToReplace[$tags],$indexed_value,$output);
+							}
+						}
+					}
+				else 
+					{ 
+					for ($tags = 0; $tags < count($tagToReplace,0); $tags++) {
+						 $output = str_replace($tagToReplace[$tags], $value, $output);
+						}
+					}
+				}
+		return $output;
 		}
 		// function that is able to replace defined tag for example include and import file cascade.
 		// will work almost as CSS @import url() with small exception -> base path of template will be relative path for all files
 		// just like http://host.com/dirname($this->file) for example ./subdir will be imported from dirname(this->file)/subdir
-		function import_file($header = "include",&$output) {
+		function import_files(&$output,$header = "include") {
             $header_len = strlen($header);
 			while (($posb = strpos($output,"<"."?".$header))!==false) 
 			{
@@ -110,12 +137,13 @@
 					$included_content = file_get_contents($toinclude);
 					// if cant get content's trow error. (optionally could skip & just continue NO_ERRORS option to Lather?)
 					if ($included_content===false) {
-						$included_content = 'Templater could not include file: "'.$toinclude.'" position '.$posb.' in "'.$this->file.'" called by '.debug_backtrace()[0]['function'].'() in file :"'.debug_backtrace()[0]['file'].'" at line: '.debug_backtrace()[0]['line'];
+						$included_content = 'Templater could not include file: "'.$toinclude.'" position '.$posb.' in "'.$this->file.'" called by '.debug_backtrace()[1]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'];
 						trigger_error($included_content,E_USER_NOTICE);
 						}	// REPLACE TAG with file content
 					$output = substr_replace($output,$included_content,$posb,$pose - $posb);
 				}	
 			}
+		return $output;
 		}
         /**
          * Sets a value for replacing a specific tag.
@@ -144,36 +172,17 @@
             	return $msg.'<br>';
             }
             $output = file_get_contents($this->file);
- 			// inlcude file as nested template
-			// 1: TPL IMPORT
-			$this->import_file("include",$output);
-			// use pure PHP preprocessor evaluate all "pre" tags, each to have own context of variables
-			// to use global variables of template use "global" just as normal PHP. Each block should be threated as function
-			// 2: PHP PREPARE
-			$this->eval_php("prepare",$output);
+ 			// inlcude common files as nested by custom template
+			// 1: IMPORT COMMON MODULES
+			$output = $this->import_files($output,"import");
 			// Set, arrays or regular $values as paired before by set function
-            // 3: VAR REPLACE
-			foreach ($this->values as $key => $value) 
-			{
-            	$tagToReplace = "{"."$"."{$key}"."}";
-            	if  (is_array($value)) 
-				{
-					$value_index = 0;
-					while (($posb = strpos($output,$tagToReplace))!==false) 
-					{
-						if ($value->count() < $value_index) 
-							break;
-						$indexed_value = $value->{$value_index};
-						$output = substr_replace($tagToReplace,$indexed_value,$posb);
-						$value_index++;
-					}
-				}
-				else $output = str_replace($tagToReplace, $value, $output);
-            }
-			// for, after including files, after replacing variables, evaluating srcipts this place is for copy-pasting results
-			// 4: PHP EVAL
-			$this->eval_php("php",$output);
-            // 5: FINITO, RETURN FINAL PRODUCT
+            // 2: VAR REPLACE
+			$output = $this->replace_variables($output);
+			// once included common files, replaced common variables, this block gives ability to evaluate php srcipts, 
+			// for example loops, conditional code, pasted arrays etc, include something once again to output
+			// 3: PHP EVAL
+			$output = $this->eval_scripts($output,"php");
+            // 4: FINITO, RETURN FINAL PRODUCT preprocessed by previous 3 steps.
 			return $output;
         }
         /**
@@ -189,7 +198,6 @@
         	 * If a type different from Template is found we provide an error message. 
         	 */
             $output = "";
-            
             foreach ($templates as $template) {
             	$content = (get_class($template) !== "Template")
             		? 'Template->merge() Error, incorrect type - expected Template, invoked by '.debug_backtrace()[0]['function'].'() in file :"'.debug_backtrace()[0]['file'].'" at line: '.debug_backtrace()[0]['line'].' '
