@@ -74,7 +74,7 @@
 		function replace_variables(&$output) {
 			foreach ($this->values as $key => $value) 
 				{
-            	$tagToReplace[] = array("$"."{"."{$key}"."}","@"."["."{$key}"."]");
+            	$tagToReplace[] = array("$"."{"."{$key}"."}","@"."{"."{$key}"."}");
             	if  (is_array($value)) 
 					{
 					for ($value_index = 0;($posb = strpos($output,$tagToReplace))!==false; $value_index++) 
