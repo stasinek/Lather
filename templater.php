@@ -13,6 +13,20 @@
 	 * @v0.1 addded support for <?php?> & <?include()?>
 	 * @v0.2 tweaked <?include()?> to support relative path ../ ./ or simmilar to CSS @import url() -> include()
 	 */
+    function path_eval($path,$base = null) {
+			if ($base===null) $base = getcwd();
+			$path = str_replace('\\','/', $path);
+			$base = str_replace('\\','/', $base);
+			$path_array = array_filter(explode('/', $path),'strlen');
+			$base_array = array_filter(explode('/', $base),'strlen');
+			foreach ($path_array as $part) {
+				if ('.' == $part) continue;
+				else if ('..' == $part) array_pop($base_array);
+						else $base_array[] = $part;
+				}
+			if (DIRECTORY_SEPARATOR=='/') return '/'.implode(DIRECTORY_SEPARATOR,$base_array);
+			else return implode(DIRECTORY_SEPARATOR,$base_array);
+			} 
     class Template {
     	/**
     	 * The filename of the template to load.
@@ -28,14 +42,43 @@
          * @var array
          */
         protected $values = array();
+        protected $output = "";
+		protected $opened = false;
+		protected $locked = 0;
+		public $debug = false;
         /**
          * Creates a new Template object and sets its associated file.
          *
          * @param string $file the filename of the template to load
          */
-        public function __construct($file) {
+        public function __construct($file,$parent = null) {
             $this->file = $file;
-        }
+			if ($parent!=null) $this->values = $parent->values;
+			}
+		public function __clone() {
+			while ($this->locked); // copy finite product, wait for changes (multiprocess enviroment)
+			$this->locked = microtime();
+			$this->values = $this->values;
+			$this->opened = $this->opened;
+			$this->output = $this->output;
+			$this->locked = 0;
+			return $this;
+			}
+		public function open() {
+			$this->locked = true;
+			$this->output = file_get_contents($this->file);
+			$this->locked = false;
+			if ($this->output===false) { $this->report_status("Prepare()"); return false; }
+			else return $this->opened = true;
+		}		
+		// prepare message with current caller context
+		function format_status($operation = 'Unknown'){
+			return 'Template: "'.$this->file.'" '.$operation.' invoked by '.debug_backtrace()[2]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'].'; ';
+		}
+		//
+		function report_status($status){
+			trigger_error($status,E_USER_NOTICE);
+		}
 		// function able to replace defined tag and evaluate php
 		function eval_scripts(&$output,$header = "php") {
             $header_len = strlen($header);
@@ -47,9 +90,9 @@
 				if ($pose!==false) {
 					$posbcc = 2 + $header_len; $posecc = 2; $pose += 2;
 					//remove heading spaces
-					while ($output[$posb+$posbcc]==' ') $posbcc++;
+					while ($output[$posb+$posbcc]==' ' OR $output[$posb+$posbcc]=='\n') $posbcc++;
 					//remove tailing spaces
-					while ($output[$pose-1]==' ') $posecc++;
+					while ($output[$pose-1]==' ' OR $output[$pose-1]=='\n') $posecc++;
 					//extract string for evaluation
 					$toeval = substr($output,$posb + $posbcc,$pose - $posb - $posecc - $posbcc);
 					//save existing echo buffer for a while
@@ -59,7 +102,15 @@
 						}
 					//redirect PHP echo into separate buffer
 					ob_start();
+					//$old_error_handler = set_error_handler("$this->error_handler",E_ALL);
+					//$result = @eval($evalcode . "; return true;");
+try {
 					eval($toeval);
+ } catch (Exception $e) {
+    $this->report_status('Template: "'.$this->file.'" '.$e->getMessage());
+}
+					//if ($old_error_handler!=null) set_error_handler($old_error_handler,E_ALL);
+					//	else restore_error_handler();
 					$evaluated = ob_get_clean();
 					$output = substr_replace($output,$evaluated,$posb,$pose - $posb);
 					//restore PHP parent echo buffer
@@ -68,13 +119,13 @@
 						}
 					} 
 				}
-			return $output;
+			return @$output;
 		}
 		// replace each ocurence of keyword with value set by this->set(key,value);
 		function replace_variables(&$output) {
 			foreach ($this->values as $key => $value) 
 				{
-            	$tagToReplace[] = array("$"."{"."{$key}"."}","@"."{"."{$key}"."}");
+            	$tagToReplace[] = array("{"."$"."{$key}"."}","{"."@"."{$key}"."}","$"."{"."{$key}"."}","@"."{"."{$key}"."}");
             	if  (is_array($value)) 
 					{
 					for ($value_index = 0;($posb = strpos($output,$tagToReplace))!==false; $value_index++) 
@@ -82,24 +133,24 @@
 						if ($value->count() < $value_index) 
 							break;
 						$indexed_value = $value->{$value_index};
-						for ($tags = 0; $tags < count($tagToReplace,0); $tags++) {
+						for ($tags = count($tagToReplace,0) - 1; $tags >= 0; $tags--) {
 							 $output = substr_replace($tagToReplace[$tags],$indexed_value,$output);
 							}
 						}
 					}
 				else 
 					{ 
-					for ($tags = 0; $tags < count($tagToReplace,0); $tags++) {
+					for ($tags = count($tagToReplace,0) - 1; $tags >= 0; $tags--) {
 						 $output = str_replace($tagToReplace[$tags], $value, $output);
 						}
 					}
 				}
-		return $output;
+		return @$output;
 		}
 		// function that is able to replace defined tag for example include and import file cascade.
 		// will work almost as CSS @import url() with small exception -> base path of template will be relative path for all files
 		// just like http://host.com/dirname($this->file) for example ./subdir will be imported from dirname(this->file)/subdir
-		function import_files(&$output,$header = "include") {
+		function import_files(&$output,$header = "include",$require = false, $echo = false) {
             $header_len = strlen($header);
 			while (($posb = strpos($output,"<"."?".$header))!==false) 
 			{
@@ -108,42 +159,73 @@
 					$posbcc  = 2 + $header_len; $posecc  = 2; $pose += 2;
 					// incluce(, include (, include <, include[, include(" and so on..
 					//remove heading spaces
-					while ($output[$posb+$posbcc]==' ') $posbcc++;
-					//remove heading < [ (
-					if ($output[$posb+$posbcc]== '(' || $output[$posb+$posbcc]== '[' || $output[$posb+$posbcc]=='<') 
-						{ $posbcc++; }
-					//remove heading spaces
-					while ($output[$posb+$posbcc]==' ') $posbcc++;
-					//remove heading ",'
-					if ($output[$posb+$posbcc]=='\'' || $output[$posb+$posbcc]=='\"') 
-						{ $posbcc++; }
-					//remove heading spaces again
-					while ($output[$posb+$posbcc]==' ') $posbcc++;
-					//And the same thing at tail remove: spaces, ",',>,],) and so on..
+					while ($output[$posb+$posbcc+0]==' ') 
+						$posbcc++;
 					//remove tailing spaces
-					while ($output[$pose-$posecc-1]==' ') $posecc++;
+					while ($output[$pose-$posecc-1]==' ') 
+						$posecc++;
+					//remove heading < [ ( and respective tailing ) ] >
+					while ($output[$posb+$posbcc]== '(' AND $output[$pose-$posecc-1]== ')')
+						{ $posbcc++; $posecc++; }
+					//remove heading spaces
+					while ($output[$posb+$posbcc+0]==' ') 
+						$posbcc++;
+					//remove tailing spaces
+					while ($output[$pose-$posecc-1]==' ') 
+						$posecc++;
+					while ($output[$posb+$posbcc]== '<' AND $output[$pose-$posecc-1]== '>')
+						{ $posbcc++; $posecc++; }
+					//remove heading spaces
+					while ($output[$posb+$posbcc+0]==' ') 
+						$posbcc++;
+					//remove tailing spaces
+					while ($output[$pose-$posecc-1]==' ') 
+						$posecc++;
+					while ($output[$posb+$posbcc]== '[' AND $output[$pose-$posecc-1]== ']')
+						{ $posbcc++; $posecc++; }
+					//remove heading spaces
+					while ($output[$posb+$posbcc]==' ') 
+						$posbcc++;
+					//remove tailing spaces
+					while ($output[$pose-$posecc-1]==' ') 
+						$posecc++;
+					//remove heading ",'
+					while ($output[$posb+$posbcc]=="'" AND $output[$pose-$posecc-1]=="'") 
+						{ $posbcc++; $posecc++; }
 					//remove tailing ",'
-					if ($output[$pose-$posecc-1]=='\'' || $output[$pose-$posecc-1]=='\"') $posecc++;
-					//remove tailing > ] )
-					if ($output[$pose-$posecc-1]== ')' || $output[$pose-$posecc-1]== ']' || $output[$pose-$posecc-1]=='>') $posecc++;
-					//remove tailing spaces again
-					while ($output[$pose-$posecc-1]==' ') $posecc++;
-					// check is path relative starting with '.' or '..' or '/' 
+					while ($output[$posb+$posbcc]=='"' AND $output[$pose-$posecc-1]=='"') 
+						{ $posbcc++; $posecc++; }
+							// check is path relative starting with '.' or '..' or '/' 
 						$toinclude = substr($output,$posb + $posbcc,$pose - $posb - $posecc - $posbcc);
 					if ($toinclude!= null ? ($toinclude[0]!='/' AND $toinclude[1]!=':') : false) { 
-						$toinclude = dirname($this->file).'/'.$toinclude; 
+						$toinclude = path_eval($toinclude,dirname($this->file));
 						}
 					// FINALLY: open file and take contents
-					$included_content = file_get_contents($toinclude);
+					if (file_exists($toinclude)) 
+						{
+						if ($echo==true) 
+							{
+							$echo_template = new Template($toinclude,$this);
+							$included_content = $echo_template->output();
+							}						
+						else $included_content = file_get_contents($toinclude);
+						}
+					else 
+						$included_content = false;
 					// if cant get content's trow error. (optionally could skip & just continue NO_ERRORS option to Lather?)
 					if ($included_content===false) {
-						$included_content = 'Templater could not include file: "'.$toinclude.'" position '.$posb.' in "'.$this->file.'" called by '.debug_backtrace()[1]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'];
-						trigger_error($included_content,E_USER_NOTICE);
+						if ($require==false) $included_content = "";
+						else 
+							{
+							$included_content  = 'Templater could not include file: "'.$toinclude.'" position '.$posb;
+							$included_content .= ' in '.$this->format_status();
+							$this->report_status($included_content);
+							}
 						}	// REPLACE TAG with file content
 					$output = substr_replace($output,$included_content,$posb,$pose - $posb);
 				}	
 			}
-		return $output;
+		return @$output;
 		}
         /**
          * Sets a value for replacing a specific tag.
@@ -152,7 +234,8 @@
          * @param string $value the value to replace
          */
         public function set($key, $value) {
-            $this->values[$key] = $value;
+			if ($this->debug) $this->report_status('Set(key="'.serialize($key).'", value="'.serialize($value).'")');
+			$this->values[$key] = $value;
         }
         /**
          * Outputs the content of the template, replacing the keys for its respective values.
@@ -166,24 +249,33 @@
         	 * If it doesn't return with an error message.
         	 * Anything else loads the file contents and loops through the array replacing every key for its value.
         	 */
-            if (!file_exists($this->file)) {
-				$msg = 'Error loading template file ('.$this->file.') invoked by '.debug_backtrace()[0]['function'].'() in file :"'.debug_backtrace()[0]['file'].'" at line: '.debug_backtrace()[0]['line'].' ';
-				trigger_error($msg,E_USER_NOTICE);
-            	return $msg.'<br>';
-            }
-            $output = file_get_contents($this->file);
- 			// inlcude common files as nested by custom template
-			// 1: IMPORT COMMON MODULES
-			$output = $this->import_files($output,"import");
-			// Set, arrays or regular $values as paired before by set function
+            if ($this->opened==false) {
+				if ($this->open()==false) return "";
+			}
+			$this->locked = true;
+			// Set, arrays or regular @{values} before inlcude happens
+            // 0: VAR REPLACE
+			$this->output = $this->replace_variables($this->output);
+ 			// Inlcude common files as nested common templates
+			// 1: IMPORT COMMON MODULES			
+			$this->output = $this->import_files($this->output,"require",true);
+			$this->output = $this->import_files($this->output,"include");
+			// Set, arrays or regular @{values} yet again inside each imported template
             // 2: VAR REPLACE
-			$output = $this->replace_variables($output);
+			$this->output = $this->replace_variables($this->output);
 			// once included common files, replaced common variables, this block gives ability to evaluate php srcipts, 
-			// for example loops, conditional code, pasted arrays etc, include something once again to output
+			// for example loops, conditional code, pasted arrays etc, include something once again to output and process
+			// whole tag will be replaced by anything it prints to the output. But doesnt need to make such.
+			// It can be used to prepare additional files as well
 			// 3: PHP EVAL
-			$output = $this->eval_scripts($output,"php");
-            // 4: FINITO, RETURN FINAL PRODUCT preprocessed by previous 3 steps.
-			return $output;
+			$this->output = $this->eval_scripts($this->output,"php");
+			// 4: IMPORT other template with separate context simmilar to 'print' or 'echo'
+			$this->output = $this->import_files($this->output,"import");
+            // 4: CLONE, UNLOCK locked output
+			//$finite = $this->output; 
+			$this->locked = false;
+            // 5: FINITO, RETURN FINAL PRODUCT preprocessed by previous 3 steps.
+			return $this->output;
         }
         /**
          * Merges the content from an array of templates and separates it with $separator.
@@ -207,6 +299,44 @@
             }
             return $output;
         }
+	public function error_handler($errno,$errstr,$errfile,$errline)
+	{ 
+	switch ($errno) {
+		case E_USER_NOTICE:
+			$this->error_list[] = sprintf("%04d - ",count($this->error_list)).'<b>NOTICE</b> ['.$errno.'] '.$errstr
+			.' on line '.$errline.' in file '.$this->file.'<br/>';
+        break;
+		case E_USER_WARNING:
+			$this->error_list[] = sprintf("%04d - ",count($this->error_list)).'<b>WARNING</b>['.$errno.'] '.$errstr
+			.' on line '.$errline.' in file '.$this->file.'<br/>';
+        break;
+		case E_USER_ERROR:
+			$this->error_list[] = sprintf("%04d - ",count($this->error_list)).'<b>ERROR</b>  ['.$errno.'] '.$errstr.'<br/>
+			Fatal error on line '.$errline.' in file '.$this->file.'
+			, PHP '.PHP_VERSION.' ('.PHP_OS.')<br/>
+			Aborting...<br/>';
+			print_errors();
+			exit(1);
+        break;
+		default:
+			$error_list[] = sprintf("%04d - ",count($error_list)).'<b>UNKNOWN ERROR</b> type: ['.$errno.'] '.$errstr
+			.' on line '.$errline.' in file '.$this->file.'<br/>';
+        break;
+    }
+    /* Don't execute PHP internal error handler */
+    return true;
+}
+//------------------------------------------------------------------------------------------------
+
+	function print_errors()
+	{
+		echo ' <ul style="float:left; text-align:left;>';
+		foreach ($this->error_list as $error)
+		{ 
+			echo '<li">'.$error.'</li>';
+		}
+		echo '</ul>';
+		}
     }
 
 ?>
