@@ -5,20 +5,19 @@
 	 * @link http://www.broculos.net/ Broculos.net Programming Tutorials
 	 * @author Nuno Freitas <nunofreitas@gmail.com>
 	 * @version 1.0 + 0.2 mod http://github.com/stasinek/lather
-	 * @modified by SSTSOFT.pl {$} instead of [@] more compatible with Latte, 
-	 * @added basic support for arrays:
-	 * @for variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
-	 * @in future hope to change it to be more sophisticated,
-	 * @will add support for $array[indexes] and it's {$array}->{$values}
+	 * @modified by SSTSOFT.pl {$} instead of just [@] to make it more feel alike Latte, 
+	 * @Added basic support for arrays:
+	 * @For variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
+	 * @In future hope to change it to be more sophisticated,
+	 * @Will add support for $array[indexes] and it's {$array}->{$values}
 	 * @v0.1 addded support for <?php?> & <?include()?>
 	 * @v0.2 tweaked <?include()?> to support relative path ../ ./ or simmilar to CSS @import url() -> include()
+	 * @v0.3 Added function: "attatch" files to keys, extend "set", combine output using multiple sources using "add"
 	 */
     function path_eval($path,$base = null) {
 			if ($base===null) $base = getcwd();
-			$path = str_replace('\\','/', $path);
-			$base = str_replace('\\','/', $base);
-			$path_array = array_filter(explode('/', $path),'strlen');
-			$base_array = array_filter(explode('/', $base),'strlen');
+			$path = str_replace('\\','/', $path); $base = str_replace('\\','/', $base);
+			$path_array = array_filter(explode('/', $path),'strlen'); $base_array = array_filter(explode('/', $base),'strlen');
 			foreach ($path_array as $part) {
 				if ('.' == $part) continue;
 				else if ('..' == $part) array_pop($base_array);
@@ -27,6 +26,74 @@
 			if (DIRECTORY_SEPARATOR=='/') return '/'.implode(DIRECTORY_SEPARATOR,$base_array);
 			else return implode(DIRECTORY_SEPARATOR,$base_array);
 			} 
+//------------------------------------------------------------------------------------------------
+
+class Stack
+{
+	/**
+	 * Stack items collection.
+	 * @param mixed[]
+	 */
+	private $items;
+	public function __construct()
+	{
+		$this->items = array();
+	}
+	/**
+	 * Adds an element on the collection top.
+	 * @param mixed $item
+	 */
+	public function push($item)
+	{
+		array_push($this->items, $item);
+	}
+	/**
+	 * If stack is not empty, removes the element that was last added.
+	 */
+	public function pop()
+	{
+		if(!$this->is_empty())	return array_pop($this->items);
+	}
+	/**
+	 * If stack is not empty, show the element that was last added.
+	 */
+	public function top()
+	{
+		if(!$this->is_empty()) return end($this->items);
+	}
+	/**
+	 * Checks if stack is empty.
+	 */
+	public function is_empty()
+	{
+		return count($this->items) ? false : true;
+	}
+	/**
+	 * Converts stack collection to string output.
+	 */
+	public function __to_string()
+	{
+		if($this->is_empty())
+			$items_string = 'Stack is empty.';
+		else
+			$items_string = implode(', ', $this->items);
+		$items_string .= PHP_EOL; 
+		return $items_string;
+	}
+	function set_last($array, $value) {
+	$index = count($array) -1;
+	if ($index < 0) 
+		return;
+	$array[$index] = $value;
+	}
+	function get_last($array, $value) {
+	$index = count($array) -1;
+	if ($index < 0) 
+		return;
+	return $array[$index];
+	}
+}
+//------------------------------------------------------------------------------------------------
     class Template {
     	/**
     	 * The filename of the template to load.
@@ -41,8 +108,8 @@
          * @access protected
          * @var array
          */
-        protected $values = array();
-        protected $output = "";
+		protected $values = array();
+		protected $output = "";
 		protected $opened = false;
 		protected $locked = 0;
 		public $debug = false;
@@ -51,34 +118,43 @@
          *
          * @param string $file the filename of the template to load
          */
-        public function __construct($file,$parent = null) {
-            $this->file = $file;
+     public function __construct($file, $parent = null) {
+       $this->file = $file;
 			if ($parent!=null) $this->values = $parent->values;
 			}
 		public function __clone() {
-			while ($this->locked); // copy finite product, wait for changes (multiprocess enviroment)
-			$this->locked = microtime();
-			$this->values = $this->values;
-			$this->opened = $this->opened;
-			$this->output = $this->output;
+			$current_lock = microtime();
+			while ($this->locked != 0); // copy finite product, wait for changes (multiprocess enviroment)	
+			$this->locked = $current_lock;
+			while ($this->locked != $current_lock); // copy finite product, wait for changes (multiprocess enviroment)	
+			$cloned = new Template($this->file);
+			$cloned->values = $this->values;
+			$cloned->output = $this->output;
 			$this->locked = 0;
-			return $this;
+			return $cloned;
 			}
 		public function open() {
-			$this->locked = true;
+			$current_lock = microtime();
+			while ($this->locked != 0); // copy finite product, wait for changes (multiprocess enviroment)	
+			$this->locked = $current_lock;
+			while ($this->locked != $current_lock); // copy finite product, wait for changes (multiprocess enviroment)	
 			$this->output = file_get_contents($this->file);
-			$this->locked = false;
+			$this->locked = 0;
 			if ($this->output===false) { $this->report_status("Prepare()"); return false; }
 			else return $this->opened = true;
 		}		
-		// prepare message with current caller context
-		function format_status($operation = 'Unknown'){
-			return 'Template: "'.$this->file.'" '.$operation.' invoked by '.debug_backtrace()[2]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'].'; ';
-		}
-		//
-		function report_status($status){
-			trigger_error($status,E_USER_NOTICE);
-		}
+		public function attatch($file, $key = null) {
+			$current_lock = microtime();
+			while ($this->locked != 0); // copy finite product, wait for changes (multiprocess enviroment)	
+			$this->locked = $current_lock;
+			while ($this->locked != $current_lock); // copy finite product, wait for changes (multiprocess enviroment)	
+			if (key===null) $this->output  .= file_get_contents($file); 
+			else $contents = file_get_contents($file);
+			$this->locked = false;
+			$this->set($key, $contents);
+			if ($this->output===false) { $this->report_status("Attatch()"); return false; }
+			else return $this->opened = true;			
+		}		
 		// function able to replace defined tag and evaluate php
 		function eval_scripts(&$output,$header = "php") {
             $header_len = strlen($header);
@@ -233,10 +309,19 @@ try {
          * @param string $key the name of the tag to replace
          * @param string $value the value to replace
          */
-        public function set($key, $value) {
+     public function set($key, $value) {
 			if ($this->debug) $this->report_status('Set(key="'.serialize($key).'", value="'.serialize($value).'")');
 			$this->values[$key] = $value;
-        }
+       }
+     public function add($key, $value) {
+				if ($this->debug) $this->report_status('Add(key="'.serialize($key).'", value="'.serialize($value).'")');
+				if (isset($this->values[$key])) $this->values[$key] += $value;
+				else $this->values[$key] = $value;
+       }
+     public function erase($key) {
+				if ($this->debug) $this->report_status('Erase(key="'.serialize($key).'")');
+				$this->values[$key] = "";
+       }
         /**
          * Outputs the content of the template, replacing the keys for its respective values.
 		 * Evaluates every PHP script between {?php ?}
@@ -249,9 +334,7 @@ try {
         	 * If it doesn't return with an error message.
         	 * Anything else loads the file contents and loops through the array replacing every key for its value.
         	 */
-            if ($this->opened==false) {
-				if ($this->open()==false) return "";
-			}
+            if ($this->opened==false) if ($this->open()==false) return "";
 			$this->locked = true;
 			// Set, arrays or regular @{values} before inlcude happens
             // 0: VAR REPLACE
@@ -278,6 +361,11 @@ try {
 			return $this->output;
         }
         /**
+         * Alias for output.
+         */
+        public function out() { echo $this->output();
+			}
+        /**
          * Merges the content from an array of templates and separates it with $separator.
          *
          * @param array $templates an array of Template objects to merge
@@ -299,29 +387,37 @@ try {
             }
             return $output;
         }
+		// prepare message with current caller context
+	function format_status($operation = 'Unknown'){
+			return 'Template: "'.$this->file.'" '.$operation.' invoked by '.debug_backtrace()[2]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'].'; ';
+		}
+		//
+	function report_status($status){
+			trigger_error($status,E_USER_NOTICE);
+		}
 	public function error_handler($errno,$errstr,$errfile,$errline)
 	{ 
 	switch ($errno) {
 		case E_USER_NOTICE:
-			$this->error_list[] = sprintf("%04d - ",count($this->error_list)).'<b>NOTICE</b> ['.$errno.'] '.$errstr
+			$this->error_list[] = sprintf("%04d - ",count($this->error_list))
+			.'<b>NOTICE</b> ['.$errno.'] '.$errstr
 			.' on line '.$errline.' in file '.$this->file.'<br/>';
         break;
 		case E_USER_WARNING:
-			$this->error_list[] = sprintf("%04d - ",count($this->error_list)).'<b>WARNING</b>['.$errno.'] '.$errstr
+			$this->error_list[] = sprintf("%04d - ",count($this->error_list))
+			.'<b>WARNING</b>['.$errno.'] '.$errstr
 			.' on line '.$errline.' in file '.$this->file.'<br/>';
         break;
 		case E_USER_ERROR:
-			$this->error_list[] = sprintf("%04d - ",count($this->error_list)).'<b>ERROR</b>  ['.$errno.'] '.$errstr.'<br/>
-			Fatal error on line '.$errline.' in file '.$this->file.'
-			, PHP '.PHP_VERSION.' ('.PHP_OS.')<br/>
-			Aborting...<br/>';
-			print_errors();
-			exit(1);
-        break;
+			$this->error_list[] = sprintf("%04d - ",count($this->error_list))
+			.'<b>FATAL ERROR</b>  ['.$errno.'] '.$errstr
+			.' on line '.$errline.' in file '.$this->file.', PHP '.PHP_VERSION().PHP_OS().'<br/>Aborting...<br/>';
+			print_errors(); exit(1); break;
 		default:
-			$error_list[] = sprintf("%04d - ",count($error_list)).'<b>UNKNOWN ERROR</b> type: ['.$errno.'] '.$errstr
+			$error_list[] = sprintf("%04d - ",count($error_list))
+			.'<b>UNKNOWN ERROR</b> Type: ['.$errno.'] '.$errstr
 			.' on line '.$errline.' in file '.$this->file.'<br/>';
-        break;
+       break;
     }
     /* Don't execute PHP internal error handler */
     return true;
