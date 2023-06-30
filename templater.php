@@ -361,9 +361,14 @@ try {
 			return $this->output;
         }
         /**
-         * Alias for output.
+         * Alias for output();
          */
-        public function out() { echo $this->output();
+        public function content() { return $this->output();
+			}
+        /**
+         * Prints the content.
+         */
+        public function print_content() { echo $this->output();
 			}
         /**
          * Merges the content from an array of templates and separates it with $separator.
