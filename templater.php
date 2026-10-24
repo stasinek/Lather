@@ -4,8 +4,8 @@
  *
  * @link   https://github.com/stasinek/lather
  * @author Nuno Freitas <nunofreitas@gmail.com> (original, Broculos.net)
- * @author SSTSOFT.pl (lather modifications)
- * @modified by SSTSOFT.pl {$} instead of just [@] to make it more feel alike Latte, 
+ * @author Stasinek (lather modifications)
+ * @modified: {$} instead of just [@] to make it more feel alike Latte, 
  * @Added basic support for arrays:
  * @For variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
  * @In future hope to change it to be more sophisticated,
