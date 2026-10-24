@@ -1,443 +1,507 @@
 <?php
-	/**
-	 * Simple template engine class (use {$tag} tags in your templates).
-	 * 
-	 * @link http://www.broculos.net/ Broculos.net Programming Tutorials
-	 * @author Nuno Freitas <nunofreitas@gmail.com>
-	 * @version 1.0 + 0.2 mod http://github.com/stasinek/lather
-	 * @modified by SSTSOFT.pl {$} instead of just [@] to make it more feel alike Latte, 
-	 * @Added basic support for arrays:
-	 * @For variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
-	 * @In future hope to change it to be more sophisticated,
-	 * @Will add support for $array[indexes] and it's {$array}->{$values}
-	 * @v0.1 addded support for <?php?> & <?include()?>
-	 * @v0.2 tweaked <?include()?> to support relative path ../ ./ or simmilar to CSS @import url() -> include()
-	 * @v0.3 Added function: "attatch" files to keys, extend "set", combine output using multiple sources using "add"
-	 */
-    function path_eval($path,$base = null) {
-			if ($base===null) $base = getcwd();
-			$path = str_replace('\\','/', $path); $base = str_replace('\\','/', $base);
-			$path_array = array_filter(explode('/', $path),'strlen'); $base_array = array_filter(explode('/', $base),'strlen');
-			foreach ($path_array as $part) {
-				if ('.' == $part) continue;
-				else if ('..' == $part) array_pop($base_array);
-						else $base_array[] = $part;
-				}
-			if (DIRECTORY_SEPARATOR=='/') return '/'.implode(DIRECTORY_SEPARATOR,$base_array);
-			else return implode(DIRECTORY_SEPARATOR,$base_array);
-			} 
-//------------------------------------------------------------------------------------------------
+/**
+ * Lather - simple PHP template engine.
+ *
+ * @link   https://github.com/stasinek/lather
+ * @author Nuno Freitas <nunofreitas@gmail.com> (original, Broculos.net)
+ * @author SSTSOFT.pl (lather modifications)
+ * @modified by SSTSOFT.pl {$} instead of just [@] to make it more feel alike Latte, 
+ * @Added basic support for arrays:
+ * @For variable $array set('array',$array) each ocurence of $array will be replaced by next element of = $array->{$variable}; 
+ * @In future hope to change it to be more sophisticated,
+ * @Will add support for $array[indexes] and it's {$array}->{$values}
+ * @v0.1 addded support for <?php?> & <?include()?>
+ * @v0.2 tweaked <?include()?> to support relative path ../ ./ or simmilar to CSS @import url() -> include()
+ * @v0.3 Added function: "attatch" files to keys, extend "set", combine output using multiple sources using "add"
+ * @version 1.0 - HUGE secure rewrite, same template syntax and the same public API
+ *
+ * Template syntax (unchanged):
+ *   ${key}  {$key}  {@key}  @{key}   value of $t->set('key', ...)
+ *   <?include file.tmpl?>            insert another template file here (missing file = nothing)
+ *   <?require file.tmpl?>            same, but a missing file is an error
+ *   <?import file.tmpl?>             render another template with a copy of the values, insert the result
+ *   <?php ... ?>  <?= ... ?>         inline PHP - DISABLED unless Template::$ALLOWPHP = true
+ *   Paths may be written as  file.tmpl  ("file.tmpl")  ('file.tmpl')  (file.tmpl)  <file.tmpl>  [file.tmpl]
+ *   and are relative to the template that contains them.
+ *
+ * Security model (what changed in 1.0):
+ *   1. Values are DATA, never template code. A template is parsed into tokens first; values are
+ *      inserted into the finished token stream and are never parsed again. A user name like
+ *      "<?include ../config.php?>" or "<?php system('id'); ?>" is printed as harmless text.
+ *   2. Values are HTML-escaped. To insert trusted HTML use Template::html($str), set_html(), or pass
+ *      the result of another template: output() and merge() return a TemplateHtml object, so
+ *      $layout->set('content', $page->output()) keeps working and is NOT escaped.
+ *   3. <?include/require/import?> can only reach files with an allowed extension (.tmpl .tpl .html .htm)
+ *      that are inside the template root directory (Template::setRoot(), default: the directory of the
+ *      first template you create). No ../ escapes, no absolute paths, no .php source leaks.
+ *   4. Inline PHP is off by default. If you enable it, the code still comes only from template files,
+ *      never from values.
+ *   5. Fail closed: a missing "?>", a path outside the root, a missing <?require?>, an include cycle or
+ *      too deep nesting throws TemplateError. Nothing is half-printed, nothing loops forever, and
+ *      error details (paths) go to the PHP error log, not to the page.
 
-class Stack
+ * MIGRATION NOTES (0.3 -> 1.0) - where the old code went
+ *
+ * Why a rewrite: 0.3 replaced variables first and then searched the RESULT for
+ * <?include / <?php, so a value could turn into a directive. 1.0 tokenizes the
+ * template source first and inserts values last, into finished tokens.
+ *
+ *   output()               ->  render(): tokenize() -> expand() -> values into tokens.
+ *                              output() now wraps render() and never throws.
+ *   replace_variables()    ->  tokenize_text() + render_var() / render_value()
+ *                              (HTML escaping, arrays: one element per occurrence)
+ *   import_files()         ->  tokenize() + clean_path() + resolve()
+ *                              (allowed extensions only, confined to Template::$root)
+ *   eval_scripts()         ->  run_php(), disabled unless Template::$allowPhp = true
+ *   path_eval()            ->  same function and signature, fixed drive letters (C:)
+ *   locked / microtime()   ->  removed (PHP objects are not shared between processes)
+ *   Stack class            ->  removed (not used by the template engine)
+ *   error_handler()        ->  removed; messages go through report_status() to the PHP log
+ *   attatch()              ->  fixed ($key typo), alias attach() added
+ *   merge(), output()      ->  return TemplateHtml (behaves like a string, inserted unescaped)
+ *
+ * New: Template::setRoot(), set_html(), Template::html(), get(), render() (throws TemplateError).
+ */
+
+if (!function_exists('path_eval')) {
+	/**
+	 * Normalizes $path relative to $base (string only, does not touch the filesystem).
+	 * Kept for backwards compatibility.
+	 */
+	function path_eval($path, $base = null)
+	{
+		if ($base === null) $base = getcwd();
+		$path = str_replace('\\', '/', $path);
+		$base = str_replace('\\', '/', $base);
+		$isAbs = ($path !== '' && $path[0] === '/') || preg_match('~^[A-Za-z]:/~', $path);
+		$prefix = '';
+		if ($isAbs) {
+			if (preg_match('~^([A-Za-z]:)/~', $path, $m)) { $prefix = $m[1]; $path = substr($path, 2); }
+			$stack = array();
+		} else {
+			if (preg_match('~^([A-Za-z]:)/~', $base, $m)) { $prefix = $m[1]; $base = substr($base, 2); }
+			$stack = array_values(array_filter(explode('/', $base), 'strlen'));
+		}
+		foreach (explode('/', $path) as $part) {
+			if ($part === '' || $part === '.') continue;
+			if ($part === '..') array_pop($stack);
+			else $stack[] = $part;
+		}
+		$res = $prefix . '/' . implode('/', $stack);
+		return DIRECTORY_SEPARATOR === '/' ? $res : str_replace('/', DIRECTORY_SEPARATOR, $res);
+	}
+}
+
+/** Thrown when a template cannot be rendered safely. The message is meant for logs, not for visitors. */
+class TemplateError extends RuntimeException {}
+
+/** Trusted HTML. Inserted into templates without escaping. Behaves like a string. */
+class TemplateHtml
 {
-	/**
-	 * Stack items collection.
-	 * @param mixed[]
-	 */
-	private $items;
-	public function __construct()
-	{
-		$this->items = array();
-	}
-	/**
-	 * Adds an element on the collection top.
-	 * @param mixed $item
-	 */
-	public function push($item)
-	{
-		array_push($this->items, $item);
-	}
-	/**
-	 * If stack is not empty, removes the element that was last added.
-	 */
-	public function pop()
-	{
-		if(!$this->is_empty())	return array_pop($this->items);
-	}
-	/**
-	 * If stack is not empty, show the element that was last added.
-	 */
-	public function top()
-	{
-		if(!$this->is_empty()) return end($this->items);
-	}
-	/**
-	 * Checks if stack is empty.
-	 */
-	public function is_empty()
-	{
-		return count($this->items) ? false : true;
-	}
-	/**
-	 * Converts stack collection to string output.
-	 */
-	public function __to_string()
-	{
-		if($this->is_empty())
-			$items_string = 'Stack is empty.';
-		else
-			$items_string = implode(', ', $this->items);
-		$items_string .= PHP_EOL; 
-		return $items_string;
-	}
-	function set_last($array, $value) {
-	$index = count($array) -1;
-	if ($index < 0) 
-		return;
-	$array[$index] = $value;
-	}
-	function get_last($array, $value) {
-	$index = count($array) -1;
-	if ($index < 0) 
-		return;
-	return $array[$index];
-	}
+	private $html;
+	public function __construct($html) { $this->html = (string)$html; }
+	public function __toString() { return $this->html; }
 }
-//------------------------------------------------------------------------------------------------
-    class Template {
-    	/**
-    	 * The filename of the template to load.
-    	 *
-    	 * @access protected
-    	 * @var string
-    	 */
-        protected $file;
-        /**
-         * An array of values for replacing each tag on the template (the key for each value is its corresponding tag).
-         *
-         * @access protected
-         * @var array
-         */
-		protected $values = array();
-		protected $output = "";
-		protected $opened = false;
-		protected $locked = 0;
-		public $debug = false;
-        /**
-         * Creates a new Template object and sets its associated file.
-         *
-         * @param string $file the filename of the template to load
-         */
-     public function __construct($file, $parent = null) {
-       $this->file = $file;
-			if ($parent!=null) $this->values = $parent->values;
-			}
-		public function __clone() {
-			$current_lock = microtime();
-			while ($this->locked != 0); // copy finite product, wait for changes (multiprocess enviroment)	
-			$this->locked = $current_lock;
-			while ($this->locked != $current_lock); // copy finite product, wait for changes (multiprocess enviroment)	
-			$cloned = new Template($this->file);
-			$cloned->values = $this->values;
-			$cloned->output = $this->output;
-			$this->locked = 0;
-			return $cloned;
-			}
-		public function open() {
-			$current_lock = microtime();
-			while ($this->locked != 0); // copy finite product, wait for changes (multiprocess enviroment)	
-			$this->locked = $current_lock;
-			while ($this->locked != $current_lock); // copy finite product, wait for changes (multiprocess enviroment)	
-			$this->output = file_get_contents($this->file);
-			$this->locked = 0;
-			if ($this->output===false) { $this->report_status("Prepare()"); return false; }
-			else return $this->opened = true;
-		}		
-		public function attatch($file, $key = null) {
-			$current_lock = microtime();
-			while ($this->locked != 0); // copy finite product, wait for changes (multiprocess enviroment)	
-			$this->locked = $current_lock;
-			while ($this->locked != $current_lock); // copy finite product, wait for changes (multiprocess enviroment)	
-			if (key===null) $this->output  .= file_get_contents($file); 
-			else $contents = file_get_contents($file);
-			$this->locked = false;
-			$this->set($key, $contents);
-			if ($this->output===false) { $this->report_status("Attatch()"); return false; }
-			else return $this->opened = true;			
-		}		
-		// function able to replace defined tag and evaluate php
-		function eval_scripts(&$output,$header = "php") {
-            $header_len = strlen($header);
-			// Eval PHP scripts NOTE: using replaced values by set! consider as server side "javascript" replacement.
-			// Here could do loops evaluate more complicated variables, include files, 
-			while (($posb = strpos($output,"<"."?".$header))!==false) 
-				{
-					$pose = strpos($output,"?".">",$posb);
-				if ($pose!==false) {
-					$posbcc = 2 + $header_len; $posecc = 2; $pose += 2;
-					//remove heading spaces
-					while ($output[$posb+$posbcc]==' ' OR $output[$posb+$posbcc]=='\n') $posbcc++;
-					//remove tailing spaces
-					while ($output[$pose-1]==' ' OR $output[$pose-1]=='\n') $posecc++;
-					//extract string for evaluation
-					$toeval = substr($output,$posb + $posbcc,$pose - $posb - $posecc - $posbcc);
-					//save existing echo buffer for a while
-					$buffered_len = ob_get_length();
-					if ($buffered_len!==false ? $buffered_len > 0 : false) {
-						$buffered = ob_get_clean();
-						}
-					//redirect PHP echo into separate buffer
-					ob_start();
-					//$old_error_handler = set_error_handler("$this->error_handler",E_ALL);
-					//$result = @eval($evalcode . "; return true;");
-try {
-					eval($toeval);
- } catch (Exception $e) {
-    $this->report_status('Template: "'.$this->file.'" '.$e->getMessage());
-}
-					//if ($old_error_handler!=null) set_error_handler($old_error_handler,E_ALL);
-					//	else restore_error_handler();
-					$evaluated = ob_get_clean();
-					$output = substr_replace($output,$evaluated,$posb,$pose - $posb);
-					//restore PHP parent echo buffer
-					if ($buffered_len!==false ? $buffered_len > 0 : false) { 
-						ob_start(); echo $buffered; 
-						}
-					} 
-				}
-			return @$output;
-		}
-		// replace each ocurence of keyword with value set by this->set(key,value);
-		function replace_variables(&$output) {
-			foreach ($this->values as $key => $value) 
-				{
-            	$tagToReplace[] = array("{"."$"."{$key}"."}","{"."@"."{$key}"."}","$"."{"."{$key}"."}","@"."{"."{$key}"."}");
-            	if  (is_array($value)) 
-					{
-					for ($value_index = 0;($posb = strpos($output,$tagToReplace))!==false; $value_index++) 
-						{
-						if ($value->count() < $value_index) 
-							break;
-						$indexed_value = $value->{$value_index};
-						for ($tags = count($tagToReplace,0) - 1; $tags >= 0; $tags--) {
-							 $output = substr_replace($tagToReplace[$tags],$indexed_value,$output);
-							}
-						}
-					}
-				else 
-					{ 
-					for ($tags = count($tagToReplace,0) - 1; $tags >= 0; $tags--) {
-						 $output = str_replace($tagToReplace[$tags], $value, $output);
-						}
-					}
-				}
-		return @$output;
-		}
-		// function that is able to replace defined tag for example include and import file cascade.
-		// will work almost as CSS @import url() with small exception -> base path of template will be relative path for all files
-		// just like http://host.com/dirname($this->file) for example ./subdir will be imported from dirname(this->file)/subdir
-		function import_files(&$output,$header = "include",$require = false, $echo = false) {
-            $header_len = strlen($header);
-			while (($posb = strpos($output,"<"."?".$header))!==false) 
-			{
-					$pose = strpos($output,"?".">",$posb);
-				if ($pose!==false) {
-					$posbcc  = 2 + $header_len; $posecc  = 2; $pose += 2;
-					// incluce(, include (, include <, include[, include(" and so on..
-					//remove heading spaces
-					while ($output[$posb+$posbcc+0]==' ') 
-						$posbcc++;
-					//remove tailing spaces
-					while ($output[$pose-$posecc-1]==' ') 
-						$posecc++;
-					//remove heading < [ ( and respective tailing ) ] >
-					while ($output[$posb+$posbcc]== '(' AND $output[$pose-$posecc-1]== ')')
-						{ $posbcc++; $posecc++; }
-					//remove heading spaces
-					while ($output[$posb+$posbcc+0]==' ') 
-						$posbcc++;
-					//remove tailing spaces
-					while ($output[$pose-$posecc-1]==' ') 
-						$posecc++;
-					while ($output[$posb+$posbcc]== '<' AND $output[$pose-$posecc-1]== '>')
-						{ $posbcc++; $posecc++; }
-					//remove heading spaces
-					while ($output[$posb+$posbcc+0]==' ') 
-						$posbcc++;
-					//remove tailing spaces
-					while ($output[$pose-$posecc-1]==' ') 
-						$posecc++;
-					while ($output[$posb+$posbcc]== '[' AND $output[$pose-$posecc-1]== ']')
-						{ $posbcc++; $posecc++; }
-					//remove heading spaces
-					while ($output[$posb+$posbcc]==' ') 
-						$posbcc++;
-					//remove tailing spaces
-					while ($output[$pose-$posecc-1]==' ') 
-						$posecc++;
-					//remove heading ",'
-					while ($output[$posb+$posbcc]=="'" AND $output[$pose-$posecc-1]=="'") 
-						{ $posbcc++; $posecc++; }
-					//remove tailing ",'
-					while ($output[$posb+$posbcc]=='"' AND $output[$pose-$posecc-1]=='"') 
-						{ $posbcc++; $posecc++; }
-							// check is path relative starting with '.' or '..' or '/' 
-						$toinclude = substr($output,$posb + $posbcc,$pose - $posb - $posecc - $posbcc);
-					if ($toinclude!= null ? ($toinclude[0]!='/' AND $toinclude[1]!=':') : false) { 
-						$toinclude = path_eval($toinclude,dirname($this->file));
-						}
-					// FINALLY: open file and take contents
-					if (file_exists($toinclude)) 
-						{
-						if ($echo==true) 
-							{
-							$echo_template = new Template($toinclude,$this);
-							$included_content = $echo_template->output();
-							}						
-						else $included_content = file_get_contents($toinclude);
-						}
-					else 
-						$included_content = false;
-					// if cant get content's trow error. (optionally could skip & just continue NO_ERRORS option to Lather?)
-					if ($included_content===false) {
-						if ($require==false) $included_content = "";
-						else 
-							{
-							$included_content  = 'Templater could not include file: "'.$toinclude.'" position '.$posb;
-							$included_content .= ' in '.$this->format_status();
-							$this->report_status($included_content);
-							}
-						}	// REPLACE TAG with file content
-					$output = substr_replace($output,$included_content,$posb,$pose - $posb);
-				}	
-			}
-		return @$output;
-		}
-        /**
-         * Sets a value for replacing a specific tag.
-         *
-         * @param string $key the name of the tag to replace
-         * @param string $value the value to replace
-         */
-     public function set($key, $value) {
-			if ($this->debug) $this->report_status('Set(key="'.serialize($key).'", value="'.serialize($value).'")');
-			$this->values[$key] = $value;
-       }
-     public function add($key, $value) {
-				if ($this->debug) $this->report_status('Add(key="'.serialize($key).'", value="'.serialize($value).'")');
-				if (isset($this->values[$key])) $this->values[$key] += $value;
-				else $this->values[$key] = $value;
-       }
-     public function erase($key) {
-				if ($this->debug) $this->report_status('Erase(key="'.serialize($key).'")');
-				$this->values[$key] = "";
-       }
-        /**
-         * Outputs the content of the template, replacing the keys for its respective values.
-		 * Evaluates every PHP script between {?php ?}
-         *
-         * @return string
-         */
-        public function output() {
-        	/**
-        	 * Tries to verify if the file exists.
-        	 * If it doesn't return with an error message.
-        	 * Anything else loads the file contents and loops through the array replacing every key for its value.
-        	 */
-            if ($this->opened==false) if ($this->open()==false) return "";
-			$this->locked = true;
-			// Set, arrays or regular @{values} before inlcude happens
-            // 0: VAR REPLACE
-			$this->output = $this->replace_variables($this->output);
- 			// Inlcude common files as nested common templates
-			// 1: IMPORT COMMON MODULES			
-			$this->output = $this->import_files($this->output,"require",true);
-			$this->output = $this->import_files($this->output,"include");
-			// Set, arrays or regular @{values} yet again inside each imported template
-            // 2: VAR REPLACE
-			$this->output = $this->replace_variables($this->output);
-			// once included common files, replaced common variables, this block gives ability to evaluate php srcipts, 
-			// for example loops, conditional code, pasted arrays etc, include something once again to output and process
-			// whole tag will be replaced by anything it prints to the output. But doesnt need to make such.
-			// It can be used to prepare additional files as well
-			// 3: PHP EVAL
-			$this->output = $this->eval_scripts($this->output,"php");
-			// 4: IMPORT other template with separate context simmilar to 'print' or 'echo'
-			$this->output = $this->import_files($this->output,"import");
-            // 4: CLONE, UNLOCK locked output
-			//$finite = $this->output; 
-			$this->locked = false;
-            // 5: FINITO, RETURN FINAL PRODUCT preprocessed by previous 3 steps.
-			return $this->output;
-        }
-        /**
-         * Alias for output();
-         */
-        public function content() { return $this->output();
-			}
-        /**
-         * Prints the content.
-         */
-        public function print_content() { echo $this->output();
-			}
-        /**
-         * Merges the content from an array of templates and separates it with $separator.
-         *
-         * @param array $templates an array of Template objects to merge
-         * @param string $separator the string that is used between each Template object
-         * @return string
-         */
-        static public function merge($templates, $separator = "\n") {
-        	/**
-        	 * Loops through the array concatenating the outputs from each template, separating with $separator.
-        	 * If a type different from Template is found we provide an error message. 
-        	 */
-            $output = "";
-            foreach ($templates as $template) {
-            	$content = (get_class($template) !== "Template")
-            		? 'Template->merge() Error, incorrect type - expected Template, invoked by '.debug_backtrace()[0]['function'].'() in file :"'.debug_backtrace()[0]['file'].'" at line: '.debug_backtrace()[0]['line'].' '
-            		: $template->output();
-//				trigger_error($content,E_USER_NOTICE);
-            	$output .= $content . $separator;
-            }
-            return $output;
-        }
-		// prepare message with current caller context
-	function format_status($operation = 'Unknown'){
-			return 'Template: "'.$this->file.'" '.$operation.' invoked by '.debug_backtrace()[2]['function'].'() in file :"'.debug_backtrace()[1]['file'].'" at line: '.debug_backtrace()[1]['line'].'; ';
-		}
-		//
-	function report_status($status){
-			trigger_error($status,E_USER_NOTICE);
-		}
-	public function error_handler($errno,$errstr,$errfile,$errline)
-	{ 
-	switch ($errno) {
-		case E_USER_NOTICE:
-			$this->error_list[] = sprintf("%04d - ",count($this->error_list))
-			.'<b>NOTICE</b> ['.$errno.'] '.$errstr
-			.' on line '.$errline.' in file '.$this->file.'<br/>';
-        break;
-		case E_USER_WARNING:
-			$this->error_list[] = sprintf("%04d - ",count($this->error_list))
-			.'<b>WARNING</b>['.$errno.'] '.$errstr
-			.' on line '.$errline.' in file '.$this->file.'<br/>';
-        break;
-		case E_USER_ERROR:
-			$this->error_list[] = sprintf("%04d - ",count($this->error_list))
-			.'<b>FATAL ERROR</b>  ['.$errno.'] '.$errstr
-			.' on line '.$errline.' in file '.$this->file.', PHP '.PHP_VERSION().PHP_OS().'<br/>Aborting...<br/>';
-			print_errors(); exit(1); break;
-		default:
-			$error_list[] = sprintf("%04d - ",count($error_list))
-			.'<b>UNKNOWN ERROR</b> Type: ['.$errno.'] '.$errstr
-			.' on line '.$errline.' in file '.$this->file.'<br/>';
-       break;
-    }
-    /* Don't execute PHP internal error handler */
-    return true;
-}
-//------------------------------------------------------------------------------------------------
 
+class Template
+{
+	/** Directory that <?include?> / <?require?> / <?import?> may read from. */
+	public static $root = null;
+	/** File extensions that template directives may load. */
+	public static $allowedExtensions = array('tmpl', 'tpl', 'html', 'htm');
+	/** Execute <?php ?> and <?= ?> blocks found in template FILES. Off by default. */
+	public static $ALLOWPHP = false;
+	/** Maximum nesting of include/require/import. */
+	public static $maxDepth = 16;
+	/** Escape values with htmlspecialchars (recommended). */
+	public static $escape = true;
+
+	protected $file;
+	protected $values = array();
+	protected $appended = '';
+	protected $opened = false;
+	protected $source = null;
+	protected $depth = 0;
+	protected $chain = array();
+	public $debug = false;
+	public $error_list = array();
+
+	/**
+	 * @param string   $file   template file (from your PHP code - trusted)
+	 * @param Template $parent optional: start with a copy of the parent's values
+	 */
+	public function __construct($file, $parent = null)
+	{
+		$this->file = $file;
+		if ($parent instanceof Template) {
+			$this->values = $parent->values;
+			$this->depth = $parent->depth;
+			$this->chain = $parent->chain;
+		}
+		if (self::$root === null) {
+			$dir = realpath(dirname($file));
+			if ($dir !== false) self::$root = $dir;
+		}
+	}
+
+	/** Sets the directory template directives are confined to. Call once at startup. */
+	public static function setRoot($dir)
+	{
+		$real = realpath($dir);
+		if ($real === false || !is_dir($real)) throw new TemplateError('Template root does not exist: ' . $dir);
+		self::$root = $real;
+	}
+
+	/** Wraps trusted HTML so it is not escaped. */
+	public static function html($html) { return new TemplateHtml($html); }
+
+	// ------------------------------------------------------------------------------------------
+	// Values
+	// ------------------------------------------------------------------------------------------
+
+	/** Value for ${key}. Strings are escaped; TemplateHtml / Template / output() are inserted as HTML. */
+	public function set($key, $value)
+	{
+		if ($this->debug) $this->report_status('set("' . $key . '")', E_USER_NOTICE);
+		$this->values[$key] = $value;
+	}
+
+	/** Same as set(), but the value is trusted HTML. */
+	public function set_html($key, $html) { $this->set($key, new TemplateHtml($html)); }
+
+	/** Appends to an existing value (text or HTML); for arrays adds the next element. */
+	public function add($key, $value)
+	{
+		if ($this->debug) $this->report_status('add("' . $key . '")', E_USER_NOTICE);
+		if (!isset($this->values[$key])) { $this->values[$key] = $value; return; }
+		$old = $this->values[$key];
+		if (is_array($old)) { $old[] = $value; $this->values[$key] = $old; return; }
+		$this->values[$key] = new TemplateHtml($this->render_value($old) . $this->render_value($value));
+	}
+
+	public function erase($key) { $this->values[$key] = ''; }
+
+	public function get($key) { return isset($this->values[$key]) ? $this->values[$key] : null; }
+
+	/**
+	 * Reads a file and stores its contents under $key as trusted HTML,
+	 * or appends it to the output when $key is null. The file name comes from your code.
+	 */
+	public function attatch($file, $key = null)
+	{
+		$contents = @file_get_contents($file);
+		if ($contents === false) {
+			$this->report_status('attatch(): cannot read "' . $file . '"');
+			return false;
+		}
+		if ($key === null) $this->appended .= $contents;
+		else $this->set($key, new TemplateHtml($contents));
+		return true;
+	}
+	/** Correctly spelled alias. */
+	public function attach($file, $key = null) { return $this->attatch($file, $key); }
+
+	// ------------------------------------------------------------------------------------------
+	// Rendering
+	// ------------------------------------------------------------------------------------------
+
+	/** Loads the template file. Called automatically by output(). */
+	public function open()
+	{
+		$src = @file_get_contents($this->file);
+		if ($src === false) {
+			$this->report_status('open(): cannot read "' . $this->file . '"');
+			return $this->opened = false;
+		}
+		$this->source = $src;
+		return $this->opened = true;
+	}
+
+	/**
+	 * Renders the template. Returns TemplateHtml (usable as a string: echo, concatenation, set()).
+	 * On a broken or unsafe template returns empty HTML and logs the reason; set $debug or use
+	 * render() to get the TemplateError instead.
+	 */
+	public function output()
+	{
+		try {
+			return $this->render();
+		} catch (TemplateError $e) {
+			$this->report_status($e->getMessage(), E_USER_WARNING);
+			return new TemplateHtml('');
+		}
+	}
+
+	/** Like output(), but throws TemplateError. */
+	public function render()
+	{
+		if (!$this->opened && !$this->open()) throw new TemplateError('Cannot read template "' . $this->file . '"');
+		$real = realpath($this->file);
+		$chain = $this->chain;
+		if ($real !== false) {
+			if (in_array($real, $chain, true)) throw new TemplateError('Include cycle at "' . $this->file . '"');
+			$chain[] = $real;
+		}
+		$counters = array();
+		$tokens = $this->expand($this->tokenize($this->source, $this->file), dirname($real !== false ? $real : $this->file), $this->depth, $chain);
+		$out = '';
+		foreach ($tokens as $t) {
+			switch ($t[0]) {
+				case 'text':
+					$out .= $t[1];
+					break;
+				case 'var':
+					$out .= $this->render_var($t[1], $t[2], $counters);
+					break;
+				case 'import':
+					$child = new Template($t[1], $this);
+					$child->depth = $this->depth + count($chain);
+					$child->chain = $chain;
+					$out .= $child->render();
+					break;
+				case 'php':
+					$out .= $this->run_php($t[1], $t[2]);
+					break;
+			}
+		}
+		return new TemplateHtml($out . $this->appended);
+	}
+
+	public function content() { return $this->output(); }
+
+	public function print_content() { echo $this->output(); }
+
+	/**
+	 * Renders several templates and joins them. Returns TemplateHtml.
+	 * @param Template[] $templates
+	 */
+	public static function merge($templates, $separator = "\n")
+	{
+		$parts = array();
+		foreach ($templates as $template) {
+			if (!($template instanceof Template)) {
+				trigger_error('Template::merge(): expected Template, got ' . (is_object($template) ? get_class($template) : gettype($template)), E_USER_WARNING);
+				continue;
+			}
+			$parts[] = (string)$template->output();
+		}
+		return new TemplateHtml(implode($separator, $parts) . (count($parts) ? $separator : ''));
+	}
+
+	// ------------------------------------------------------------------------------------------
+	// Parsing - template SOURCE only. Values never pass through here.
+	// ------------------------------------------------------------------------------------------
+
+	const VAR_RE = '/\$\{\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*\}|\{\$\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*\}|\{@\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*\}|@\{\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*\}/';
+
+	/** Splits template source into tokens: text, var, include/require/import, php. */
+	protected function tokenize($src, $file)
+	{
+		$tokens = array();
+		$pos = 0;
+		$len = strlen($src);
+		while ($pos < $len) {
+			$open = strpos($src, '<?', $pos);
+			$textEnd = $open === false ? $len : $open;
+			if ($textEnd > $pos) $this->tokenize_text(substr($src, $pos, $textEnd - $pos), $tokens);
+			if ($open === false) break;
+
+			if (!preg_match('/\G<\?(?:(include|require|import|php)(?=[\s(<\[\'"]|\?>)|(=))/Ai', $src, $m, 0, $open)) {
+				/* Not a directive (e.g. an XML declaration): keep it as plain text. */
+				$tokens[] = array('text', '<?');
+				$pos = $open + 2;
+				continue;
+			}
+			$close = strpos($src, '?>', $open + 2);
+			if ($close === false) {
+				throw new TemplateError('Unclosed "' . $m[0] . '" (missing "?>") in "' . $file . '" at byte ' . $open);
+			}
+			$kind = isset($m[2]) && $m[2] === '=' ? '=' : strtolower($m[1]);
+			$body = substr($src, $open + strlen($m[0]), $close - $open - strlen($m[0]));
+			if ($kind === 'php' || $kind === '=') {
+				$tokens[] = array('php', $body, $kind === '=');
+			} else {
+				$tokens[] = array($kind, $this->clean_path($body), $file);
+			}
+			$pos = $close + 2;
+		}
+		return $tokens;
+	}
+
+	protected function tokenize_text($text, &$tokens)
+	{
+		$last = 0;
+		if (preg_match_all(self::VAR_RE, $text, $mm, PREG_OFFSET_CAPTURE | PREG_SET_ORDER)) {
+			foreach ($mm as $m) {
+				$off = $m[0][1];
+				if ($off > $last) $tokens[] = array('text', substr($text, $last, $off - $last));
+				$key = '';
+				for ($g = 1; $g <= 4; $g++) if (isset($m[$g]) && $m[$g][1] >= 0 && $m[$g][0] !== '') { $key = $m[$g][0]; break; }
+				$tokens[] = array('var', $key, $m[0][0]);
+				$last = $off + strlen($m[0][0]);
+			}
+		}
+		if ($last < strlen($text)) $tokens[] = array('text', substr($text, $last));
+	}
+
+	/** "  ( 'file.tmpl' )  " -> file.tmpl */
+	protected function clean_path($s)
+	{
+		$s = trim($s);
+		$pairs = array('(' => ')', '<' => '>', '[' => ']', '"' => '"', "'" => "'");
+		do {
+			$changed = false;
+			$s = trim($s);
+			if (strlen($s) >= 2 && isset($pairs[$s[0]]) && substr($s, -1) === $pairs[$s[0]]) {
+				$s = substr($s, 1, -1);
+				$changed = true;
+			}
+		} while ($changed);
+		return trim($s);
+	}
+
+	/** Replaces include/require tokens with the tokens of the included files (recursively). */
+	protected function expand($tokens, $baseDir, $depth, $chain)
+	{
+		$out = array();
+		foreach ($tokens as $t) {
+			if ($t[0] !== 'include' && $t[0] !== 'require' && $t[0] !== 'import') { $out[] = $t; continue; }
+			if ($depth + count($chain) > self::$maxDepth) throw new TemplateError('Templates nested too deep at "' . $t[2] . '"');
+			$path = $this->resolve($t[1], $baseDir, $t[2]);
+			if ($path === null) {
+				if ($t[0] === 'include') {
+					$this->report_status('include skipped, file not found: "' . $t[1] . '" in "' . $t[2] . '"', E_USER_NOTICE);
+					continue;
+				}
+				throw new TemplateError('Required template not found: "' . $t[1] . '" in "' . $t[2] . '"');
+			}
+			if ($t[0] === 'import') { $out[] = array('import', $path); continue; }
+			if (in_array($path, $chain, true)) throw new TemplateError('Include cycle: "' . $t[1] . '" in "' . $t[2] . '"');
+			$src = @file_get_contents($path);
+			if ($src === false) throw new TemplateError('Cannot read "' . $path . '"');
+			$sub = $this->tokenize($src, $path);
+			$subChain = $chain;
+			$subChain[] = $path;
+			foreach ($this->expand($sub, dirname($path), $depth, $subChain) as $x) $out[] = $x;
+		}
+		return $out;
+	}
+
+	/**
+	 * Resolves a directive path. Returns the real path, or null when the file does not exist.
+	 * Throws on anything outside the root or with a forbidden extension.
+	 */
+	protected function resolve($rel, $baseDir, $from)
+	{
+		if ($rel === '' || strpos($rel, "\0") !== false) throw new TemplateError('Empty or invalid path in "' . $from . '"');
+		$norm = str_replace('\\', '/', $rel);
+		if ($norm[0] === '/' || preg_match('~^[A-Za-z]:~', $norm) || preg_match('~^[a-z][a-z0-9+.\-]*://~i', $norm)) {
+			throw new TemplateError('Absolute paths and URLs are not allowed: "' . $rel . '" in "' . $from . '"');
+		}
+		$ext = strtolower(pathinfo($norm, PATHINFO_EXTENSION));
+		if (!in_array($ext, self::$allowedExtensions, true)) {
+			throw new TemplateError('File type not allowed: "' . $rel . '" in "' . $from . '"');
+		}
+		$root = self::$root;
+		if ($root === null) throw new TemplateError('Template root is not set');
+		$candidate = $baseDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $norm);
+		$real = realpath($candidate);
+		// Check the logical path too, so a missing file outside the root is an error, not a silent skip.
+		$logical = path_eval($norm, $baseDir);
+		if (!$this->inside_root($logical, $root)) {
+			throw new TemplateError('Path leaves the template root: "' . $rel . '" in "' . $from . '"');
+		}
+		if ($real === false || !is_file($real)) return null;
+		if (!$this->inside_root($real, $root)) {          // e.g. a symlink pointing outside
+			throw new TemplateError('Path leaves the template root: "' . $rel . '" in "' . $from . '"');
+		}
+		return $real;
+	}
+
+	protected function inside_root($path, $root)
+	{
+		$p = rtrim(str_replace('\\', '/', $path), '/');
+		$r = rtrim(str_replace('\\', '/', $root), '/');
+		if (DIRECTORY_SEPARATOR === '\\') { $p = strtolower($p); $r = strtolower($r); }
+		return $p === $r || strpos($p, $r . '/') === 0;
+	}
+
+	// ------------------------------------------------------------------------------------------
+	// Values -> HTML
+	// ------------------------------------------------------------------------------------------
+
+	protected function render_var($key, $literal, &$counters)
+	{
+		if (!array_key_exists($key, $this->values)) return $literal;   // unknown tag stays as written
+		$v = $this->values[$key];
+		if (is_array($v)) {
+			// Each occurrence takes the next element (as documented in lather 0.2).
+			$i = isset($counters[$key]) ? $counters[$key] : 0;
+			$counters[$key] = $i + 1;
+			$list = array_values($v);
+			if (!isset($list[$i])) return '';
+			$v = $list[$i];
+		}
+		return $this->render_value($v);
+	}
+
+	protected function render_value($v)
+	{
+		if ($v instanceof TemplateHtml) return (string)$v;
+		if ($v instanceof Template) return (string)$v->output();
+		if ($v === null || $v === false) return '';
+		if ($v === true) return '1';
+		if (is_array($v)) return '';
+		if (is_object($v) && !method_exists($v, '__toString')) return '';
+		$s = (string)$v;
+		return self::$escape ? htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') : $s;
+	}
+
+	/** Runs inline PHP from a template FILE (only when Template::$ALLOWPHP is true). */
+	protected function run_php($code, $isEcho)
+	{
+		if (!self::$ALLOWPHP) {
+			throw new TemplateError('Inline PHP in "' . $this->file . '" is disabled (Template::$ALLOWPHP = false)');
+		}
+		$vars = $this->values;
+		$t = $this;
+		$fn = function () use ($code, $isEcho, $vars, $t) {
+			extract($vars, EXTR_SKIP);
+			if ($isEcho) eval('echo ' . rtrim(trim($code), ';') . ';');
+			else eval($code . ';');
+		};
+		ob_start();
+		try {
+			$fn();
+		} catch (Throwable $e) {
+			ob_end_clean();
+			throw new TemplateError('PHP error in "' . $this->file . '": ' . $e->getMessage());
+		}
+		return ob_get_clean();
+	}
+
+	// ------------------------------------------------------------------------------------------
+	// Errors - to the PHP error log, never into the page
+	// ------------------------------------------------------------------------------------------
+
+	function format_status($operation = 'Unknown')
+	{
+		return 'Template: "' . $this->file . '" ' . $operation;
+	}
+
+	function report_status($status, $level = E_USER_NOTICE)
+	{
+		$this->error_list[] = $status;
+		trigger_error('Lather: ' . $status, $level);
+	}
+
+	/** Prints collected messages - only in debug mode (they contain server paths). */
 	function print_errors()
 	{
-		echo ' <ul style="float:left; text-align:left;>';
-		foreach ($this->error_list as $error)
-		{ 
-			echo '<li">'.$error.'</li>';
-		}
+		if (!$this->debug) return;
+		echo '<ul style="float:left;text-align:left">';
+		foreach ($this->error_list as $error) echo '<li>' . htmlspecialchars($error, ENT_QUOTES, 'UTF-8') . '</li>';
 		echo '</ul>';
-		}
-    }
-
+	}
+}
 ?>
